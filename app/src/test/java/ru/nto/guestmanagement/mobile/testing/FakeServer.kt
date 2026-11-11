@@ -56,6 +56,32 @@ class FakeServer {
 
     fun stop() = server.stop(0)
 
+    /** Тела всех POST-запросов создания заявки (сырой JSON). */
+    val createdBodies = CopyOnWriteArrayList<String>()
+
+    /** Подменить ответ на создание: по телу запроса вернуть (код, JSON). `null` — создать заявку как обычно. */
+    @Volatile var createResponse: ((String) -> Pair<Int, String>)? = null
+
+    /** Если задан — ответ на создание ждёт countDown(). */
+    @Volatile var createGate: CountDownLatch? = null
+
+    private var nextId = 100L
+
+    /** Обычное создание: заявка в статусе PENDING добавляется в список, ответ — объект деталей. */
+    @Synchronized
+    private fun createPending(body: String): Pair<Int, String> {
+        val json = org.json.JSONObject(body)
+        val id = nextId++
+        items = items + FakeRequest(id, json.getString("fullName"), json.getString("validFrom"), json.getString("validTo"))
+        val details = org.json.JSONObject(body)
+            .put("id", id)
+            .put("status", "PENDING")
+            .put("comment", org.json.JSONObject.NULL)
+            .put("createdAt", "2026-10-10T12:31:05")
+            .put("updatedAt", "2026-10-10T12:31:05")
+        return 201 to details.toString()
+    }
+
     private fun handle(ex: HttpExchange) {
         val query = ex.requestURI.rawQuery
         requests += "${ex.requestMethod} ${ex.requestURI.path}" + (query?.let { "?$it" } ?: "")
@@ -69,6 +95,12 @@ class FakeServer {
             parts[2] == "auth" -> {
                 authGate?.await(10, TimeUnit.SECONDS)
                 200 to """{"name":"Иванов Иван Иванович"}"""
+            }
+            parts[2] == "requests" && parts.size == 3 && ex.requestMethod == "POST" -> {
+                val requestBody = ex.requestBody.readBytes().toString(Charsets.UTF_8)
+                createdBodies += requestBody
+                createGate?.await(10, TimeUnit.SECONDS)
+                createResponse?.invoke(requestBody) ?: createPending(requestBody)
             }
             parts[2] == "requests" && parts.size == 3 -> {
                 listGate?.await(10, TimeUnit.SECONDS)
