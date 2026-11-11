@@ -1,0 +1,418 @@
+openapi: 3.0.3
+info:
+  title: НТО. Заявки на пропуск
+  version: 1.0.0
+  description: |
+    Контракт командного задания второго тура. **Единый источник истины** для клиента (Android) и сервера (backend):
+    оба строятся по этому файлу, ответы эталонного сервера и тестовых заглушек (Ktor `MockEngine`) берутся из него.
+    Основан на разделах 5–7 технического задания (V4); при расхождении приоритет у ТЗ, а расхождение нужно исправить здесь.
+
+    ## Общие правила
+
+    * Формат обмена — JSON, UTF-8. Строки с датой — `yyyy-MM-dd'T'HH:mm:ss` **без смещения**, всегда `Europe/Moscow`.
+    * Код сотрудника — ровно 4 символа `A–Z a–z 0–9`, регистр значим, пробелы не удаляются.
+    * Служебные отметки времени (`createdAt`, `updatedAt`) — с точностью до секунды.
+    * Формат ошибок — один из трёх (см. схемы `Error` и `FieldErrors`):
+      `{"error":"..."}` — общая ошибка с фиксированным текстом;
+      `{"errors":{"поле":"..."}}` — ошибки полей (клиент показывает текст как есть, сервер обязан вернуть непустой).
+
+    ## Порядок проверок на сервере
+
+    1. Пользовательские методы: формат кода (`400 Invalid code format`) → известность кода (`401 Unauthorized`).
+       Служебный метод: ключ `X-Admin-Key` (`403 Forbidden`).
+    2. Заявка существует и принадлежит вызывающему (`404 Request not found`; чужая и отсутствующая неотличимы).
+    3. Корректность тела (`400`).
+    4. Допустимость перехода статуса (`409 Invalid status transition`).
+
+    При создании: доступ → валидация (`400`) → дубликат (`409 Duplicate request`).
+    Каждая отклонённая операция не меняет данные.
+
+    ## Статусы и переходы
+
+    `PENDING → APPROVED | REJECTED | CANCELLED`. Других переходов нет. Любое действие над заявкой не в `PENDING` — `409`,
+    даже если запрошен уже установленный статус.
+
+    ## Что остаётся за рамками контракта (уточнить у организаторов)
+
+    Перечень вопросов см. в `ВОПРОСЫ_К_КОНТРАКТУ.md`.
+servers:
+  - url: http://localhost:8080
+    description: Локальный сервер (адрес клиента задаётся в Constants.HOST)
+tags:
+  - name: employee
+    description: Методы сотрудника (код в пути)
+  - name: security
+    description: Служебные методы охраны (заголовок X-Admin-Key)
+
+paths:
+  /api/{code}/auth:
+    get:
+      tags: [employee]
+      operationId: auth
+      summary: Проверить код сотрудника
+      parameters:
+        - $ref: '#/components/parameters/Code'
+      responses:
+        '200':
+          description: Код известен
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Profile' }
+              example: { name: Иванов Иван Иванович }
+        '400': { $ref: '#/components/responses/InvalidCodeFormat' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  /api/{code}/requests:
+    get:
+      tags: [employee]
+      operationId: listRequests
+      summary: Свои заявки
+      description: |
+        Только заявки вызывающего. Сортировка: `validFrom` по возрастанию, затем `id` по возрастанию.
+        Пустой результат — `[]`. Пагинации нет.
+        Параметр `status` необязателен; допустимы только четыре значения в верхнем регистре.
+        Пустое, неизвестное значение или неверный регистр — `400 Invalid status`.
+      parameters:
+        - $ref: '#/components/parameters/Code'
+        - name: status
+          in: query
+          required: false
+          description: Фильтр по статусу. Для варианта «Все» параметр не передаётся вовсе.
+          schema:
+            $ref: '#/components/schemas/RequestStatus'
+      responses:
+        '200':
+          description: Список (возможно пустой)
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/RequestSummary' }
+              example:
+                - id: 12
+                  fullName: Сидоров Пётр Ильич
+                  validFrom: '2026-10-14T10:00:00'
+                  validTo: '2026-10-14T16:00:00'
+                  status: PENDING
+        '400':
+          description: Неверный формат кода или неизвестный статус
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+              examples:
+                code: { value: { error: Invalid code format } }
+                status: { value: { error: Invalid status } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+    post:
+      tags: [employee]
+      operationId: createRequest
+      summary: Создать заявку
+      description: |
+        Автор определяется по коду, статус всегда `PENDING`, `comment` — `null`,
+        `createdAt` и `updatedAt` равны текущему времени сервера.
+        Строки нормализуются обрезкой крайних пробелов; сохраняются нормализованные значения.
+        Возвращаются **все** ошибочные поля сразу.
+
+        Правила полей (клиент и сервер используют одни и те же):
+
+        | Поле | Правило |
+        |---|---|
+        | `fullName` | обязательно; 5–150 символов после обрезки |
+        | `phone` | обязательно; `+7` и ровно 10 цифр `0–9`; пробелы и разделители внутри недопустимы |
+        | `organization` | необязательно; до 150 символов; отсутствие, `null` и пустая строка сохраняются как `null` |
+        | `purpose` | обязательно; 5–200 символов после обрезки |
+        | `validFrom` | обязательно; корректные дата и время; не раньше текущего времени |
+        | `validTo` | обязательно; позже `validFrom`, **в тот же календарный день** |
+
+        Пропущенное или `null` обязательное поле — ошибка этого поля. Неразбираемая дата — ошибка её поля;
+        сравнение дат выполняется только для успешно разобранных значений.
+
+        Дубликат: заявка **того же автора**, с тем же нормализованным телефоном, в статусе `PENDING` или `APPROVED`,
+        интервал которой пересекается с новым. Интервалы полуоткрытые: пересечение есть при
+        `newFrom < existingTo && existingFrom < newTo`; соприкосновение границей (11:00 и 11:00) пересечением не является.
+      parameters:
+        - $ref: '#/components/parameters/Code'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CreateRequestBody' }
+            example:
+              fullName: Сидоров Пётр Ильич
+              phone: '+79991234567'
+              organization: ООО НТО
+              purpose: Встреча с сотрудником
+              validFrom: '2026-10-14T10:00:00'
+              validTo: '2026-10-14T16:00:00'
+      responses:
+        '201':
+          description: Заявка создана
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/RequestDetails' }
+              example:
+                id: 12
+                fullName: Сидоров Пётр Ильич
+                phone: '+79991234567'
+                organization: ООО НТО
+                purpose: Встреча с сотрудником
+                validFrom: '2026-10-14T10:00:00'
+                validTo: '2026-10-14T16:00:00'
+                status: PENDING
+                comment: null
+                createdAt: '2026-10-10T12:31:05'
+                updatedAt: '2026-10-10T12:31:05'
+        '400':
+          description: Неверный формат кода, ошибки полей или некорректное тело
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: '#/components/schemas/Error'
+                  - $ref: '#/components/schemas/FieldErrors'
+              examples:
+                code: { value: { error: Invalid code format } }
+                fields:
+                  value:
+                    errors:
+                      phone: Укажите телефон в формате +7XXXXXXXXXX
+                      validTo: Окончание должно быть позже начала в тот же день
+                body:
+                  summary: Синтаксически некорректный JSON или значение не строкового типа
+                  value: { error: Invalid request body }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '409':
+          description: Дубликат — пересекающаяся заявка того же автора на тот же телефон
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+              example: { error: Duplicate request }
+
+  /api/{code}/requests/{id}:
+    get:
+      tags: [employee]
+      operationId: getRequest
+      summary: Детали своей заявки
+      parameters:
+        - $ref: '#/components/parameters/Code'
+        - $ref: '#/components/parameters/RequestId'
+      responses:
+        '200':
+          description: Заявка
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/RequestDetails' }
+              example:
+                id: 12
+                fullName: Сидоров Пётр Ильич
+                phone: '+79991234567'
+                organization: ООО НТО
+                purpose: Встреча с сотрудником
+                validFrom: '2026-10-14T10:00:00'
+                validTo: '2026-10-14T16:00:00'
+                status: REJECTED
+                comment: Сотрудник отсутствует в указанный день
+                createdAt: '2026-10-10T12:31:05'
+                updatedAt: '2026-10-10T15:02:44'
+        '400': { $ref: '#/components/responses/InvalidCodeFormat' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/RequestNotFound' }
+
+  /api/{code}/requests/{id}/cancel:
+    post:
+      tags: [employee]
+      operationId: cancelRequest
+      summary: Отменить свою заявку
+      description: Разрешено только автору и только из `PENDING`. Тело запроса не нужно. Меняются `status` и `updatedAt`.
+      parameters:
+        - $ref: '#/components/parameters/Code'
+        - $ref: '#/components/parameters/RequestId'
+      responses:
+        '200':
+          description: Заявка отменена (`status = CANCELLED`)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/RequestDetails' }
+        '400': { $ref: '#/components/responses/InvalidCodeFormat' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/RequestNotFound' }
+        '409': { $ref: '#/components/responses/InvalidTransition' }
+
+  /api/admin/requests/{id}:
+    patch:
+      tags: [security]
+      operationId: decideRequest
+      summary: Решение охраны
+      description: |
+        Целевой статус — `APPROVED` или `REJECTED`; `CANCELLED` устанавливается только методом отмены.
+        Для `APPROVED` переданный `comment` игнорируется (у одобренной заявки он `null`).
+        Для `REJECTED` комментарий обязателен: 1–500 символов после обрезки пробелов.
+        Клиент (Android) этот метод **не вызывает** и ключ не хранит; метод используют тесты и организаторы.
+      security:
+        - AdminKey: []
+      parameters:
+        - $ref: '#/components/parameters/RequestId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/DecisionBody' }
+            examples:
+              approve: { value: { status: APPROVED } }
+              reject: { value: { status: REJECTED, comment: Сотрудник отсутствует в указанный день } }
+      responses:
+        '200':
+          description: Решение принято
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/RequestDetails' }
+        '400':
+          description: Ошибка поля `status` или `comment`, либо некорректное тело
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: '#/components/schemas/Error'
+                  - $ref: '#/components/schemas/FieldErrors'
+              examples:
+                status: { value: { errors: { status: 'Допустимы только APPROVED и REJECTED' } } }
+                comment: { value: { errors: { comment: Укажите причину отклонения } } }
+                body: { value: { error: Invalid request body } }
+        '403':
+          description: Нет или неверный ключ охраны
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+              example: { error: Forbidden }
+        '404': { $ref: '#/components/responses/RequestNotFound' }
+        '409': { $ref: '#/components/responses/InvalidTransition' }
+
+components:
+  securitySchemes:
+    AdminKey:
+      type: apiKey
+      in: header
+      name: X-Admin-Key
+  parameters:
+    Code:
+      name: code
+      in: path
+      required: true
+      description: |
+        Код сотрудника — ровно 4 символа `A–Z a–z 0–9`, регистр значим.
+        Неверный формат — `400 Invalid code format`; верный формат, но неизвестный код — `401 Unauthorized`.
+      schema: { type: string, example: '1111' }
+    RequestId:
+      name: id
+      in: path
+      required: true
+      schema: { type: integer, format: int64, example: 12 }
+  responses:
+    InvalidCodeFormat:
+      description: Неверный формат кода
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+          example: { error: Invalid code format }
+    Unauthorized:
+      description: Код нужного формата, но неизвестен
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+          example: { error: Unauthorized }
+    RequestNotFound:
+      description: Заявка отсутствует или принадлежит другому сотруднику
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+          example: { error: Request not found }
+    InvalidTransition:
+      description: Исходный статус уже не `PENDING`
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+          example: { error: Invalid status transition }
+  schemas:
+    DateTime:
+      type: string
+      pattern: '^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}$'
+      description: Московское время без смещения, `yyyy-MM-dd'T'HH:mm:ss`
+      example: '2026-10-14T10:00:00'
+    RequestStatus:
+      type: string
+      enum: [PENDING, APPROVED, REJECTED, CANCELLED]
+      description: |
+        Подписи в интерфейсе: PENDING — «На рассмотрении», APPROVED — «Одобрена»,
+        REJECTED — «Отклонена», CANCELLED — «Отменена».
+    Profile:
+      type: object
+      required: [name]
+      properties:
+        name: { type: string, description: ФИО сотрудника (staff.full_name) }
+    RequestSummary:
+      type: object
+      required: [id, fullName, validFrom, validTo, status]
+      properties:
+        id: { type: integer, format: int64 }
+        fullName: { type: string }
+        validFrom: { $ref: '#/components/schemas/DateTime' }
+        validTo: { $ref: '#/components/schemas/DateTime' }
+        status: { $ref: '#/components/schemas/RequestStatus' }
+    RequestDetails:
+      type: object
+      required: [id, fullName, phone, organization, purpose, validFrom, validTo, status, comment, createdAt, updatedAt]
+      description: Ключи `organization` и `comment` присутствуют всегда, при отсутствии значения — `null`.
+      properties:
+        id: { type: integer, format: int64 }
+        fullName: { type: string }
+        phone: { type: string, example: '+79991234567' }
+        organization: { type: string, nullable: true }
+        purpose: { type: string }
+        validFrom: { $ref: '#/components/schemas/DateTime' }
+        validTo: { $ref: '#/components/schemas/DateTime' }
+        status: { $ref: '#/components/schemas/RequestStatus' }
+        comment:
+          type: string
+          nullable: true
+          description: Комментарий охраны. Не `null` только у отклонённых заявок.
+        createdAt: { $ref: '#/components/schemas/DateTime' }
+        updatedAt: { $ref: '#/components/schemas/DateTime' }
+    CreateRequestBody:
+      type: object
+      description: |
+        Все поля передаются **строками** и могут отсутствовать или быть `null` — это ошибки соответствующих полей
+        (`400 errors`), а не `Invalid request body`. `Invalid request body` — только для синтаксически некорректного
+        JSON или значения нестрокового типа (например, число вместо строки).
+        Клиент не передаёт автора, статус, комментарий и служебные даты.
+      properties:
+        fullName: { type: string, nullable: true }
+        phone: { type: string, nullable: true }
+        organization: { type: string, nullable: true }
+        purpose: { type: string, nullable: true }
+        validFrom: { type: string, nullable: true, description: 'yyyy-MM-dd''T''HH:mm:ss' }
+        validTo: { type: string, nullable: true, description: 'yyyy-MM-dd''T''HH:mm:ss' }
+    DecisionBody:
+      type: object
+      properties:
+        status:
+          type: string
+          nullable: true
+          description: |
+            `APPROVED` или `REJECTED`. Любое другое значение (включая `PENDING`, `CANCELLED`, пустое,
+            неверный регистр) — `400 {"errors":{"status":"..."}}`.
+        comment: { type: string, nullable: true }
+    Error:
+      type: object
+      required: [error]
+      properties:
+        error: { type: string }
+    FieldErrors:
+      type: object
+      required: [errors]
+      description: |
+        Ключи фиксированы: для создания — `fullName`, `phone`, `organization`, `purpose`, `validFrom`, `validTo`;
+        для решения охраны — `status`, `comment`. Текст сообщений не оценивается, но непуст.
+      properties:
+        errors:
+          type: object
+          additionalProperties: { type: string }
