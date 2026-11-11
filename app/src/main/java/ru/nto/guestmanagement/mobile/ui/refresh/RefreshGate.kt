@@ -12,6 +12,7 @@ package ru.nto.guestmanagement.mobile.ui.refresh
 
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.launch
 
 /**
  * Защита от повторных обновлений: пока запущенное через [launch] обновление выполняется, новый запуск игнорируется
@@ -19,11 +20,21 @@ import kotlinx.coroutines.Job
  * Реализовать. Сигнатуры фиксированы: ими пользуются ViewModel списка и деталей.
  */
 class RefreshGate {
+    /** Последнее запущенное обновление. `null` — ещё ничего не запускали или его отменили. */
+    private var current: Job? = null
+
     fun launch(scope: CoroutineScope, block: suspend () -> Unit): Job? {
-        TODO()
+        // Предыдущее обновление ещё идёт — второй запрос не создаём.
+        if (current?.isActive == true) return null
+        val job = scope.launch { block() }
+        current = job
+        return job
     }
 
     fun cancel() {
-        TODO()
+        // После cancel() isActive сразу становится false, поэтому следующий launch() пройдёт
+        // (так работает смена фильтра: отменить старую загрузку и сразу начать новую).
+        current?.cancel()
+        current = null
     }
 }
