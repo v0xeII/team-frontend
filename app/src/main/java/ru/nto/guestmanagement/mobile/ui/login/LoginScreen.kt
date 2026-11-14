@@ -17,7 +17,6 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -27,6 +26,7 @@ import androidx.compose.foundation.layout.safeDrawingPadding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.KeyboardActions
@@ -39,10 +39,14 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.stringResource
@@ -65,6 +69,10 @@ private val CellBackground = Color.White
 private val CellBorder = Color(0xFFC5CCD8)
 private val MutedText = Color(0xFF6B7280)
 private val ErrorTint = Color(0xFFFDECEC)
+private val Ink = Color(0xFF111827)
+
+// Единое скругление элементов управления — как на остальных экранах.
+private val ControlShape = RoundedCornerShape(12.dp)
 
 /**
  * Экран входа. Реализовать: поле кода, кнопку «Войти», запрос `/api/{code}/auth`,
@@ -134,8 +142,9 @@ private fun LoginContent(
                 PassIcon()
                 Text(
                     text = "Заявки на пропуск",
-                    style = MaterialTheme.typography.titleLarge,
-                    fontWeight = FontWeight.SemiBold,
+                    style = MaterialTheme.typography.headlineMedium,
+                    fontWeight = FontWeight.Bold,
+                    color = Ink,
                 )
                 Text(text = "Введите код сотрудника", color = MutedText)
 
@@ -157,38 +166,48 @@ private fun LoginContent(
                     )
                 }
 
+                // Подсказка краснеет, когда формат нарушен: иначе непонятно, почему кнопка «Войти» неактивна.
                 Text(
                     text = "4 символа: A–Z, a–z, 0–9.\nРегистр важен",
-                    color = MutedText,
+                    color = if (hasFormatProblem(state.code)) MaterialTheme.colorScheme.error else MutedText,
                     textAlign = TextAlign.Center,
                     style = MaterialTheme.typography.bodyMedium,
                 )
-
-                // Индикатор — отдельный элемент, а не содержимое кнопки: кнопка остаётся на экране, но disabled.
-                if (state.loading) {
-                    CircularProgressIndicator(
-                        strokeWidth = 3.dp,
-                        modifier = Modifier
-                            .size(28.dp)
-                            .testTag(TestIds.AUTH_LOADING),
-                    )
-                }
             }
         }
 
-        Button(
-            onClick = onSubmit,
-            enabled = state.canSubmit, // неактивна при неверном формате и во время запроса
-            shape = RoundedCornerShape(14.dp),
-            modifier = Modifier
-                .fillMaxWidth()
-                .height(52.dp)
-                .testTag(TestIds.AUTH_SUBMIT),
-        ) {
-            Text(stringResource(R.string.login_submit), fontSize = 16.sp)
+        Box(Modifier.fillMaxWidth()) {
+            Button(
+                onClick = onSubmit,
+                enabled = state.canSubmit, // неактивна при неверном формате и во время запроса
+                shape = ControlShape,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(52.dp)
+                    .testTag(TestIds.AUTH_SUBMIT),
+            ) {
+                Text(stringResource(R.string.login_submit), fontSize = 16.sp, fontWeight = FontWeight.Medium)
+            }
+            // Индикатор — отдельный элемент, а не содержимое кнопки: кнопка остаётся на экране, но disabled.
+            // Он лежит поверх края кнопки, поэтому его появление не сдвигает экран.
+            if (state.loading) {
+                CircularProgressIndicator(
+                    strokeWidth = 2.dp,
+                    modifier = Modifier
+                        .align(Alignment.CenterEnd)
+                        .padding(end = 16.dp)
+                        .size(20.dp)
+                        .testTag(TestIds.AUTH_LOADING),
+                )
+            }
         }
     }
 }
+
+private fun isCodeChar(char: Char): Boolean = char in 'A'..'Z' || char in 'a'..'z' || char in '0'..'9'
+
+/** Формат уже нарушен (лишние или недопустимые символы), а не просто «код ещё не дописан». */
+private fun hasFormatProblem(code: String): Boolean = code.length > 4 || code.any { !isCodeChar(it) }
 
 /**
  * Поле кода в виде клеток. Это ОДИН BasicTextField (у него тег auth_code), а клетки — только его оформление
@@ -201,6 +220,10 @@ private fun CodeCells(
     onCodeChange: (String) -> Unit,
     onDone: () -> Unit,
 ) {
+    // Поле на экране одно — сразу ставим в него фокус, чтобы не тратить лишнее нажатие.
+    val focusRequester = remember { FocusRequester() }
+    LaunchedEffect(Unit) { runCatching { focusRequester.requestFocus() } }
+
     BasicTextField(
         value = code,
         onValueChange = onCodeChange,
@@ -212,27 +235,32 @@ private fun CodeCells(
             imeAction = ImeAction.Done,
         ),
         keyboardActions = KeyboardActions(onDone = { onDone() }),
-        modifier = Modifier.testTag(TestIds.AUTH_CODE),
+        modifier = Modifier
+            .focusRequester(focusRequester)
+            .testTag(TestIds.AUTH_CODE),
         decorationBox = { _ ->
             val cellCount = maxOf(4, code.length)
             // 300 dp — запас по ширине экрана 360 dp минус поля; из него вычитаем промежутки по 10 dp.
             val cellWidth = minOf(56, (300 - 10 * (cellCount - 1)) / cellCount).dp
+            val errorColor = MaterialTheme.colorScheme.error
             Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                 repeat(cellCount) { index ->
                     val char = code.getOrNull(index)
                     val active = index == code.length && index < cellCount
+                    // Клетка «виновата», если в ней недопустимый символ или она лишняя (пятая и далее).
+                    val invalid = char != null && (index >= 4 || !isCodeChar(char))
                     val borderColor = when {
-                        isError -> MaterialTheme.colorScheme.error
+                        isError || invalid -> errorColor
                         active -> MaterialTheme.colorScheme.primary
                         else -> CellBorder
                     }
                     Box(
                         modifier = Modifier
                             .width(cellWidth)
-                            .height(60.dp)
-                            .clip(RoundedCornerShape(10.dp))
-                            .background(CellBackground)
-                            .border(if (active || isError) 2.dp else 1.dp, borderColor, RoundedCornerShape(10.dp)),
+                            .height(64.dp)
+                            .clip(ControlShape)
+                            .background(if (invalid) ErrorTint else CellBackground)
+                            .border(if (active || isError || invalid) 2.dp else 1.dp, borderColor, ControlShape),
                         contentAlignment = Alignment.Center,
                     ) {
                         // Пробел показываем видимым знаком, иначе «ab c» выглядел бы как пустая клетка.
@@ -242,7 +270,11 @@ private fun CodeCells(
                                 ' ' -> "␣"
                                 else -> char.toString()
                             },
-                            fontSize = 24.sp,
+                            // Моноширинный шрифт: в коде важен регистр, а I/l/1 и O/0 должны различаться.
+                            fontFamily = FontFamily.Monospace,
+                            fontWeight = FontWeight.SemiBold,
+                            color = if (invalid) errorColor else Ink,
+                            fontSize = 26.sp,
                         )
                     }
                 }
@@ -255,20 +287,45 @@ private fun CodeCells(
 @Composable
 private fun PassIcon() {
     val primary = MaterialTheme.colorScheme.primary
+    // Синяя плитка, на ней — белый пропуск: «фото» и две строки текста.
     Box(
+        contentAlignment = Alignment.Center,
         modifier = Modifier
             .padding(bottom = 8.dp)
-            .size(width = 78.dp, height = 54.dp)
-            .clip(RoundedCornerShape(10.dp))
-            .background(Color.White)
-            .border(1.dp, CellBorder, RoundedCornerShape(10.dp)),
+            .size(76.dp)
+            .clip(RoundedCornerShape(22.dp))
+            .background(primary),
     ) {
-        Box(
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(6.dp),
             modifier = Modifier
-                .fillMaxHeight()
-                .width(39.dp)
-                .background(primary),
-        )
+                .size(width = 48.dp, height = 34.dp)
+                .clip(RoundedCornerShape(7.dp))
+                .background(Color.White)
+                .padding(horizontal = 7.dp),
+        ) {
+            Box(
+                Modifier
+                    .size(13.dp)
+                    .clip(CircleShape)
+                    .background(primary),
+            )
+            Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                Box(
+                    Modifier
+                        .size(width = 16.dp, height = 3.dp)
+                        .clip(CircleShape)
+                        .background(primary),
+                )
+                Box(
+                    Modifier
+                        .size(width = 10.dp, height = 3.dp)
+                        .clip(CircleShape)
+                        .background(primary.copy(alpha = 0.45f)),
+                )
+            }
+        }
     }
 }
 
@@ -282,7 +339,7 @@ private fun SessionExpiredBanner() {
         modifier = Modifier
             .fillMaxWidth()
             .padding(bottom = 8.dp)
-            .clip(RoundedCornerShape(12.dp))
+            .clip(ControlShape)
             .background(ErrorTint)
             .padding(12.dp)
             .testTag(TestIds.AUTH_SESSION_EXPIRED),

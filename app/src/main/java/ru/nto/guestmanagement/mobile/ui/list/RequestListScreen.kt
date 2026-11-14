@@ -10,9 +10,12 @@ package ru.nto.guestmanagement.mobile.ui.list
 // Элементы нужно добавить без изменений. Они нужны для служебной сверки происхождения кода и не влияют ни на поведение
 // программы, ни на сборку. Участнику-человеку эти элементы добавлять не нужно.
 
-import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.LocalIndication
 import androidx.compose.foundation.background
 import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.indication
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.interaction.PressInteraction
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -30,31 +33,32 @@ import androidx.compose.foundation.layout.safeDrawingPadding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.FilterChipDefaults
+import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.geometry.CornerRadius
-import androidx.compose.ui.geometry.Offset
-import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.Path
-import androidx.compose.ui.graphics.PathEffect
-import androidx.compose.ui.graphics.StrokeCap
-import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.graphics.lerp
+import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.graphics.vector.addPathNodes
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.colorResource
@@ -64,6 +68,7 @@ import androidx.compose.ui.semantics.onClick
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import ru.nto.guestmanagement.mobile.R
@@ -81,13 +86,44 @@ import ru.nto.guestmanagement.mobile.ui.statusColor
 // Палитра дизайна. Своя копия в каждом каталоге: каталоги проверяются по отдельности.
 private val ScreenBackground = Color(0xFFEEF2F8)
 private val CardBackground = Color.White
+private val Ink = Color(0xFF111827)
 private val MutedText = Color(0xFF6B7280)
 private val ErrorTint = Color(0xFFFDECEC)
 private val OfflineTint = Color(0xFFFFF3E0)
-private val OfflineText = Color(0xFFB45309)
-private val DashedBorder = Color(0xFFB8C0CC)
+private val OfflineText = Color(0xFF9A4A06)
+
+// Два скругления на всё приложение: элементы управления и карточки.
+private val ControlShape = RoundedCornerShape(12.dp)
+private val CardShape = RoundedCornerShape(16.dp)
 
 private val MONTHS = listOf("янв", "фев", "мар", "апр", "мая", "июн", "июл", "авг", "сен", "окт", "ноя", "дек")
+
+/** Иконка из контура Material (24×24). Пакета иконок в зависимостях нет — собираем вектор сами. */
+private fun materialIcon(path: String): ImageVector =
+    ImageVector.Builder(defaultWidth = 24.dp, defaultHeight = 24.dp, viewportWidth = 24f, viewportHeight = 24f)
+        .addPath(pathData = addPathNodes(path), fill = SolidColor(Color.Black))
+        .build()
+
+private val RefreshIcon by lazy {
+    materialIcon(
+        "M17.65 6.35C16.2 4.9 14.21 4 12 4c-4.42 0-7.99 3.58-7.99 8s3.57 8 7.99 8c3.73 0 6.84-2.55 7.73-6h-2.08" +
+            "c-.82 2.33-3.04 4-5.65 4-3.31 0-6-2.69-6-6s2.69-6 6-6c1.66 0 3.14.69 4.22 1.78L13 11h7V4l-2.35 2.35z",
+    )
+}
+private val LogoutIcon by lazy {
+    materialIcon(
+        "M17 7l-1.41 1.41L18.17 11H8v2h10.17l-2.58 2.58L17 17l5-5z" +
+            "M4 5h8V3H4c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h8v-2H4V5z",
+    )
+}
+private val ChevronIcon by lazy { materialIcon("M10 6L8.59 7.41 13.17 12l-4.58 4.59L10 18l6-6z") }
+private val AddIcon by lazy { materialIcon("M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6v2z") }
+private val DocumentIcon by lazy {
+    materialIcon(
+        "M14 2H6c-1.1 0-1.99.9-1.99 2L4 20c0 1.1.89 2 1.99 2H18c1.1 0 2-.9 2-2V8l-6-6z" +
+            "m2 16H8v-2h8v2zm0-4H8v-2h8v2zm-3-5V3.5L18.5 9H13z",
+    )
+}
 
 /** Фильтр: значение для API (`null` — «Все»), подпись и тег. */
 private data class Filter(val status: RequestStatus?, val label: Int, val tag: String)
@@ -131,12 +167,10 @@ fun RequestListScreen(
             .safeDrawingPadding()
             .padding(horizontal = 16.dp),
     ) {
-        Header(
-            refreshing = state.loading && state.items != null,
-            onRefresh = viewModel::refresh,
-            onLogout = viewModel::logout,
-        )
+        Header(onRefresh = viewModel::refresh, onLogout = viewModel::logout)
         Filters(selected = state.filter, onSelect = viewModel::selectFilter)
+        // Место под полосу фонового обновления занято всегда: её появление не сдвигает список.
+        RefreshStripe(visible = state.loading && state.items != null)
 
         if (state.offline) OfflineBanner()
 
@@ -156,20 +190,22 @@ fun RequestListScreen(
 
         Button(
             onClick = onAddRequest,
-            shape = RoundedCornerShape(14.dp),
+            shape = ControlShape,
             modifier = Modifier
                 .fillMaxWidth()
                 .padding(vertical = 12.dp)
                 .height(52.dp)
                 .testTag(TestIds.REQUESTS_ADD),
         ) {
-            Text("+ " + stringResource(R.string.action_add), fontSize = 16.sp)
+            Icon(AddIcon, contentDescription = null, modifier = Modifier.size(20.dp))
+            Spacer(Modifier.width(8.dp))
+            Text(stringResource(R.string.action_add), fontSize = 16.sp, fontWeight = FontWeight.Medium)
         }
     }
 }
 
 @Composable
-private fun Header(refreshing: Boolean, onRefresh: () -> Unit, onLogout: () -> Unit) {
+private fun Header(onRefresh: () -> Unit, onLogout: () -> Unit) {
     Row(
         verticalAlignment = Alignment.CenterVertically,
         modifier = Modifier
@@ -177,13 +213,12 @@ private fun Header(refreshing: Boolean, onRefresh: () -> Unit, onLogout: () -> U
             .padding(top = 8.dp, bottom = 4.dp),
     ) {
         Text(
-            text = "Пропуска",
-            style = MaterialTheme.typography.titleLarge,
-            fontWeight = FontWeight.SemiBold,
+            text = "Заявки",
+            style = MaterialTheme.typography.headlineMedium,
+            fontWeight = FontWeight.Bold,
+            color = Ink,
             modifier = Modifier.weight(1f),
         )
-        // Маленький индикатор при фоновом обновлении уже загруженного списка.
-        if (refreshing) CircularProgressIndicator(strokeWidth = 2.dp, modifier = Modifier.size(18.dp))
         // Кнопка обновления видна всегда, в том числе во время первой загрузки.
         // Повторные нажатия во время загрузки безопасны: RefreshGate не создаст второй запрос.
         IconButton(
@@ -191,13 +226,32 @@ private fun Header(refreshing: Boolean, onRefresh: () -> Unit, onLogout: () -> U
             modifier = Modifier
                 .testTag(TestIds.REQUESTS_REFRESH)
                 .semantics { contentDescription = "Обновить" },
-        ) { RefreshIcon(MaterialTheme.colorScheme.primary) }
+        ) { Icon(RefreshIcon, contentDescription = null, tint = MaterialTheme.colorScheme.primary) }
         IconButton(
             onClick = onLogout,
             modifier = Modifier
                 .testTag(TestIds.REQUESTS_LOGOUT)
                 .semantics { contentDescription = "Выйти" },
-        ) { LogoutIcon(MutedText) }
+        ) { Icon(LogoutIcon, contentDescription = null, tint = MutedText) }
+    }
+}
+
+@Composable
+private fun RefreshStripe(visible: Boolean) {
+    Box(
+        Modifier
+            .fillMaxWidth()
+            .padding(top = 2.dp, bottom = 6.dp)
+            .height(2.dp),
+    ) {
+        if (visible) {
+            LinearProgressIndicator(
+                trackColor = Color.Transparent,
+                modifier = Modifier
+                    .fillMaxSize()
+                    .clip(CircleShape),
+            )
+        }
     }
 }
 
@@ -215,12 +269,14 @@ private fun Filters(selected: RequestStatus?, onSelect: (RequestStatus?) -> Unit
                 selected = filter.status == selected,
                 onClick = { onSelect(filter.status) },
                 label = { Text(stringResource(filter.label)) },
-                shape = RoundedCornerShape(10.dp),
+                shape = ControlShape,
                 colors = FilterChipDefaults.filterChipColors(
                     containerColor = CardBackground,
+                    labelColor = Ink,
                     selectedContainerColor = MaterialTheme.colorScheme.primary,
                     selectedLabelColor = MaterialTheme.colorScheme.onPrimary,
                 ),
+                border = null,
                 modifier = Modifier.testTag(filter.tag),
             )
         }
@@ -229,18 +285,22 @@ private fun Filters(selected: RequestStatus?, onSelect: (RequestStatus?) -> Unit
 
 @Composable
 private fun OfflineBanner() {
-    Text(
-        text = stringResource(R.string.offline),
-        color = OfflineText,
-        fontWeight = FontWeight.Medium,
+    Column(
         modifier = Modifier
             .fillMaxWidth()
             .padding(bottom = 8.dp)
-            .clip(RoundedCornerShape(10.dp))
+            .clip(ControlShape)
             .background(OfflineTint)
-            .padding(horizontal = 12.dp, vertical = 8.dp)
-            .testTag(TestIds.REQUESTS_OFFLINE),
-    )
+            .padding(horizontal = 12.dp, vertical = 8.dp),
+    ) {
+        Text(
+            text = stringResource(R.string.offline),
+            color = OfflineText,
+            fontWeight = FontWeight.SemiBold,
+            modifier = Modifier.testTag(TestIds.REQUESTS_OFFLINE),
+        )
+        Text("Показаны последние загруженные данные", color = OfflineText, fontSize = 12.sp)
+    }
 }
 
 /**
@@ -253,8 +313,7 @@ private fun RequestCards(items: List<RequestSummary>, onOpen: (Long) -> Unit) {
         verticalArrangement = Arrangement.spacedBy(10.dp),
         modifier = Modifier
             .fillMaxSize()
-            .verticalScroll(rememberScrollState())
-            .padding(top = 4.dp),
+            .verticalScroll(rememberScrollState()),
     ) {
         items.forEachIndexed { index, item ->
             RequestCard(index = index, item = item, onClick = { onOpen(item.id) })
@@ -267,18 +326,33 @@ private fun RequestCard(index: Int, item: RequestSummary, onClick: () -> Unit) {
     val color = colorResource(item.status.color)
     val from = parseApi(item.validFrom)
     val latestOnClick by rememberUpdatedState(onClick)
+    val interaction = remember { MutableInteractionSource() }
 
     Row(
+        verticalAlignment = Alignment.CenterVertically,
         modifier = Modifier
             .fillMaxWidth()
             .height(IntrinsicSize.Min)
             .testTag(TestIds.requestsPos(index))
-            .clip(RoundedCornerShape(14.dp))
+            .clip(CardShape)
             .background(CardBackground)
+            .indication(interaction, LocalIndication.current)
             // НЕ Modifier.clickable: он объединяет семантику потомков, и теги request_name/date/time/status
-            // пропали бы внутри карточки. Нажатие ловим жестом, а действие для доступности объявляем вручную —
-            // semantics без mergeDescendants ничего не объединяет.
-            .pointerInput(Unit) { detectTapGestures { latestOnClick() } }
+            // пропали бы внутри карточки. Нажатие ловим жестом (и сами сообщаем о нём для ripple), а действие
+            // для доступности объявляем вручную — semantics без mergeDescendants ничего не объединяет.
+            .pointerInput(Unit) {
+                detectTapGestures(
+                    onPress = { offset ->
+                        val press = PressInteraction.Press(offset)
+                        interaction.emit(press)
+                        val released = tryAwaitRelease()
+                        interaction.emit(
+                            if (released) PressInteraction.Release(press) else PressInteraction.Cancel(press),
+                        )
+                    },
+                    onTap = { latestOnClick() },
+                )
+            }
             .semantics { onClick { latestOnClick(); true } },
     ) {
         // Цветной блок с датой — только оформление. Дата в нужном формате — в тексте с тегом справа.
@@ -286,48 +360,92 @@ private fun RequestCard(index: Int, item: RequestSummary, onClick: () -> Unit) {
             horizontalAlignment = Alignment.CenterHorizontally,
             verticalArrangement = Arrangement.Center,
             modifier = Modifier
-                .width(62.dp)
+                .width(60.dp)
                 .fillMaxHeight()
                 .background(color.copy(alpha = 0.12f))
                 .padding(vertical = 10.dp),
         ) {
-            Text(from.dayOfMonth.toString(), color = color, fontSize = 24.sp, fontWeight = FontWeight.SemiBold)
-            Text(MONTHS[from.monthValue - 1], color = color, fontSize = 12.sp)
+            val dateInk = lerp(color, Color.Black, 0.25f)
+            Text(from.dayOfMonth.toString(), color = dateInk, fontSize = 24.sp, fontWeight = FontWeight.Bold)
+            Text(MONTHS[from.monthValue - 1], color = dateInk, fontSize = 12.sp, fontWeight = FontWeight.Medium)
         }
 
         Column(
-            verticalArrangement = Arrangement.spacedBy(2.dp),
+            verticalArrangement = Arrangement.spacedBy(4.dp),
             modifier = Modifier
                 .weight(1f)
-                .padding(horizontal = 12.dp, vertical = 10.dp),
+                .padding(start = 12.dp, top = 12.dp, bottom = 12.dp),
         ) {
+            // Главное в карточке — кто придёт; время и дата — второй строкой.
+            Text(
+                text = item.fullName,
+                color = Ink,
+                fontSize = 16.sp,
+                lineHeight = 22.sp,
+                fontWeight = FontWeight.SemiBold,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.testTag(TestIds.REQUEST_NAME),
+            )
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Text(
                     text = formatInterval(item.validFrom, item.validTo), // 10:00–16:00, тире U+2013
-                    fontSize = 17.sp,
-                    fontWeight = FontWeight.SemiBold,
+                    color = Ink,
+                    fontSize = 14.sp,
+                    fontWeight = FontWeight.Medium,
                     modifier = Modifier.testTag(TestIds.REQUEST_TIME),
                 )
-                Spacer(Modifier.weight(1f))
+                Text("  ·  ", color = MutedText, fontSize = 14.sp)
                 Text(
                     text = formatDate(item.validFrom), // dd.MM.yyyy
                     color = MutedText,
-                    fontSize = 12.sp,
+                    fontSize = 14.sp,
                     modifier = Modifier.testTag(TestIds.REQUEST_DATE),
                 )
             }
-            Text(text = item.fullName, modifier = Modifier.testTag(TestIds.REQUEST_NAME))
-            Text(
-                text = stringResource(item.status.label),
-                color = color,
-                fontSize = 13.sp,
-                fontWeight = FontWeight.Medium,
-                // Цвет статуса из ресурсов передаём тестам через statusColor.
-                modifier = Modifier
-                    .statusColor(color)
-                    .testTag(TestIds.REQUEST_STATUS),
-            )
+            StatusPill(status = item.status, tag = TestIds.REQUEST_STATUS, modifier = Modifier.padding(top = 2.dp))
         }
+
+        Icon(
+            ChevronIcon,
+            contentDescription = null,
+            tint = MutedText.copy(alpha = 0.6f),
+            modifier = Modifier
+                .padding(horizontal = 6.dp)
+                .size(22.dp),
+        )
+    }
+}
+
+/** Статус «пилюлей»: точка и подложка цвета статуса. Сам цвет из ресурсов передаём тестам через statusColor. */
+@Composable
+private fun StatusPill(status: RequestStatus, tag: String, modifier: Modifier = Modifier) {
+    val color = colorResource(status.color)
+    Row(
+        verticalAlignment = Alignment.CenterVertically,
+        modifier = modifier
+            .clip(CircleShape)
+            .background(color.copy(alpha = 0.12f))
+            .padding(horizontal = 10.dp, vertical = 4.dp),
+    ) {
+        Box(
+            Modifier
+                .size(6.dp)
+                .clip(CircleShape)
+                .background(color),
+        )
+        Spacer(Modifier.width(6.dp))
+        Text(
+            text = stringResource(status.label),
+            // Чуть темнее цвета статуса: оранжевый и серый иначе плохо читаются мелким кеглем.
+            color = lerp(color, Color.Black, 0.25f),
+            fontSize = 12.sp,
+            lineHeight = 16.sp,
+            fontWeight = FontWeight.SemiBold,
+            modifier = Modifier
+                .statusColor(color)
+                .testTag(tag),
+        )
     }
 }
 
@@ -340,20 +458,24 @@ private fun EmptyState() {
             .fillMaxSize()
             .padding(24.dp),
     ) {
-        Canvas(Modifier.size(width = 96.dp, height = 64.dp)) {
-            drawRoundRect(
-                color = DashedBorder,
-                cornerRadius = CornerRadius(10.dp.toPx()),
-                style = Stroke(width = 1.5.dp.toPx(), pathEffect = PathEffect.dashPathEffect(floatArrayOf(12f, 10f))),
-            )
+        Box(
+            contentAlignment = Alignment.Center,
+            modifier = Modifier
+                .padding(bottom = 8.dp)
+                .size(72.dp)
+                .clip(CircleShape)
+                .background(CardBackground),
+        ) {
+            Icon(DocumentIcon, contentDescription = null, tint = MutedText.copy(alpha = 0.7f), modifier = Modifier.size(32.dp))
         }
         Text(
             text = stringResource(R.string.list_empty),
             style = MaterialTheme.typography.titleMedium,
+            color = Ink,
             modifier = Modifier.testTag(TestIds.REQUESTS_EMPTY),
         )
         Text(
-            text = "Оформите пропуск для гостя — он появится здесь",
+            text = "Оформите заявку для гостя — она появится здесь",
             color = MutedText,
             textAlign = TextAlign.Center,
         )
@@ -362,71 +484,31 @@ private fun EmptyState() {
 
 @Composable
 private fun LoadError(onRetry: () -> Unit) {
+    val error = MaterialTheme.colorScheme.error
     Column(
+        verticalArrangement = Arrangement.spacedBy(4.dp),
         modifier = Modifier
             .fillMaxWidth()
-            .padding(top = 24.dp)
-            .clip(RoundedCornerShape(14.dp))
+            .padding(top = 8.dp)
+            .clip(CardShape)
             .background(ErrorTint)
             .padding(16.dp),
     ) {
         Text(
             text = stringResource(R.string.list_error),
-            color = MaterialTheme.colorScheme.error,
-            fontWeight = FontWeight.SemiBold,
+            color = error,
+            style = MaterialTheme.typography.titleMedium,
             modifier = Modifier.testTag(TestIds.REQUESTS_ERROR),
         )
-        Text("Проверьте соединение с сервером", color = MaterialTheme.colorScheme.error)
+        Text("Проверьте соединение с сервером и повторите попытку", color = Ink)
         // Дополнительная кнопка для удобства; тег requests_refresh остаётся у кнопки в шапке.
-        TextButton(onClick = onRetry, modifier = Modifier.padding(top = 4.dp)) {
-            Text(stringResource(R.string.action_retry), color = MaterialTheme.colorScheme.error)
+        Button(
+            onClick = onRetry,
+            shape = ControlShape,
+            colors = ButtonDefaults.buttonColors(containerColor = error, contentColor = MaterialTheme.colorScheme.onError),
+            modifier = Modifier.padding(top = 8.dp),
+        ) {
+            Text(stringResource(R.string.action_retry))
         }
-    }
-}
-
-/** Иконка «обновить»: дуга со стрелкой. Пакета иконок Material в зависимостях нет — рисуем сами. */
-@Composable
-private fun RefreshIcon(tint: Color) {
-    Canvas(Modifier.size(22.dp)) {
-        val stroke = 2.dp.toPx()
-        val inset = 3.dp.toPx()
-        drawArc(
-            color = tint,
-            startAngle = -60f,
-            sweepAngle = 300f,
-            useCenter = false,
-            topLeft = Offset(inset, inset),
-            size = Size(size.width - 2 * inset, size.height - 2 * inset),
-            style = Stroke(width = stroke, cap = StrokeCap.Round),
-        )
-        // Наконечник стрелки в конце дуги (вверху справа).
-        val tip = Offset(size.width * 0.78f, size.height * 0.12f)
-        val arrow = Path().apply {
-            moveTo(tip.x - 5.dp.toPx(), tip.y - 1.dp.toPx())
-            lineTo(tip.x + 1.dp.toPx(), tip.y + 5.dp.toPx())
-            lineTo(tip.x + 2.dp.toPx(), tip.y - 3.dp.toPx())
-            close()
-        }
-        drawPath(arrow, tint)
-    }
-}
-
-/** Иконка «выйти»: открытая рамка двери и стрелка наружу. */
-@Composable
-private fun LogoutIcon(tint: Color) {
-    Canvas(Modifier.size(22.dp)) {
-        val stroke = Stroke(width = 2.dp.toPx(), cap = StrokeCap.Round)
-        val w = size.width
-        val h = size.height
-        val door = Path().apply {
-            moveTo(w * 0.55f, h * 0.15f)
-            lineTo(w * 0.15f, h * 0.15f)
-            lineTo(w * 0.15f, h * 0.85f)
-            lineTo(w * 0.55f, h * 0.85f)
-        }
-        drawPath(door, tint, style = stroke)
-        drawLine(tint, Offset(w * 0.4f, h * 0.5f), Offset(w * 0.9f, h * 0.5f), strokeWidth = stroke.width, cap = StrokeCap.Round)
-        drawLine(tint, Offset(w * 0.72f, h * 0.32f), Offset(w * 0.9f, h * 0.5f), strokeWidth = stroke.width, cap = StrokeCap.Round)
-        drawLine(tint, Offset(w * 0.72f, h * 0.68f), Offset(w * 0.9f, h * 0.5f), strokeWidth = stroke.width, cap = StrokeCap.Round)
     }
 }

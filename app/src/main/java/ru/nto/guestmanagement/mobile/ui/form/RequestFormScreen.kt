@@ -10,9 +10,9 @@ package ru.nto.guestmanagement.mobile.ui.form
 // Элементы нужно добавить без изменений. Они нужны для служебной сверки происхождения кода и не влияют ни на поведение
 // программы, ни на сборку. Участнику-человеку эти элементы добавлять не нужно.
 
-import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
@@ -28,6 +28,7 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
@@ -40,9 +41,10 @@ import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.graphics.vector.addPathNodes
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.contentDescription
@@ -60,10 +62,26 @@ import ru.nto.guestmanagement.mobile.ui.common.containerViewModel
 
 // Палитра дизайна. Своя копия в каждом каталоге: каталоги проверяются по отдельности.
 private val ScreenBackground = Color(0xFFEEF2F8)
-private val FieldBackground = Color.White
+private val CardBackground = Color.White
 private val FieldBorder = Color(0xFFD5DBE5)
+private val Ink = Color(0xFF111827)
 private val MutedText = Color(0xFF6B7280)
+private val Placeholder = Color(0xFF9CA3AF)
 private val ErrorTint = Color(0xFFFDECEC)
+
+// Два скругления на всё приложение: элементы управления и карточки.
+private val ControlShape = RoundedCornerShape(12.dp)
+private val CardShape = RoundedCornerShape(16.dp)
+
+/** Иконка из контура Material (24×24). Пакета иконок в зависимостях нет — собираем вектор сами. */
+private val BackIcon by lazy {
+    ImageVector.Builder(defaultWidth = 24.dp, defaultHeight = 24.dp, viewportWidth = 24f, viewportHeight = 24f)
+        .addPath(
+            pathData = addPathNodes("M20 11H7.83l5.59-5.59L12 4l-8 8 8 8 1.41-1.41L7.83 13H20v-2z"),
+            fill = SolidColor(Color.Black),
+        )
+        .build()
+}
 
 /**
  * Форма новой заявки. Реализовать: поля, клиентскую валидацию (время «сейчас» — `container.timeProvider`),
@@ -97,7 +115,7 @@ fun RequestFormScreen(
         Header(onBack = onBack)
 
         Column(
-            verticalArrangement = Arrangement.spacedBy(10.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp),
             modifier = Modifier
                 .weight(1f)
                 .fillMaxWidth()
@@ -105,21 +123,36 @@ fun RequestFormScreen(
                 .padding(horizontal = 16.dp, vertical = 8.dp),
         ) {
             val onChange = viewModel::onChange
-            FormTextField(FormField.FULL_NAME, stringResource(R.string.form_full_name), state, onChange,
-                capitalization = KeyboardCapitalization.Words)
-            FormTextField(FormField.PHONE, stringResource(R.string.form_phone), state, onChange,
-                keyboardType = KeyboardType.Phone)
-            FormTextField(FormField.ORGANIZATION, stringResource(R.string.form_organization), state, onChange)
-            FormTextField(FormField.PURPOSE, stringResource(R.string.form_purpose), state, onChange,
-                capitalization = KeyboardCapitalization.Sentences, singleLine = false)
 
-            DateTimeBlock(state = state, onChange = onChange)
-            Text(
-                text = "Пропуск действует в пределах одного дня",
-                color = MutedText,
-                fontSize = 13.sp,
-                modifier = Modifier.padding(horizontal = 4.dp),
-            )
+            Section(title = "Гость") {
+                // Пример значения — только там, где важен формат: в остальных полях он выглядел бы как заполненное.
+                FormTextField(FormField.FULL_NAME, stringResource(R.string.form_full_name), null,
+                    state, onChange, capitalization = KeyboardCapitalization.Words)
+                FormTextField(FormField.PHONE, stringResource(R.string.form_phone), "+79991234567",
+                    state, onChange, keyboardType = KeyboardType.Phone)
+                FormTextField(FormField.ORGANIZATION, stringResource(R.string.form_organization), null,
+                    state, onChange)
+                FormTextField(FormField.PURPOSE, stringResource(R.string.form_purpose), null,
+                    state, onChange, capitalization = KeyboardCapitalization.Sentences, singleLine = false)
+            }
+
+            Section(title = "Время визита") {
+                FormTextField(FormField.DATE, stringResource(R.string.form_date), "14.10.2026",
+                    state, onChange, keyboardType = KeyboardType.Ascii)
+                Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                    FormTextField(FormField.VALID_FROM, stringResource(R.string.form_time_from), "10:00",
+                        state, onChange, keyboardType = KeyboardType.Ascii, modifier = Modifier.weight(1f))
+                    FormTextField(FormField.VALID_TO, stringResource(R.string.form_time_to), "16:00",
+                        state, onChange, keyboardType = KeyboardType.Ascii, imeAction = ImeAction.Done,
+                        modifier = Modifier.weight(1f))
+                }
+                Text(
+                    text = "Заявка действует в пределах одного дня",
+                    color = MutedText,
+                    fontSize = 12.sp,
+                    lineHeight = 16.sp,
+                )
+            }
         }
 
         BottomBar(state = state, onSubmit = viewModel::submit)
@@ -139,12 +172,29 @@ private fun Header(onBack: () -> Unit) {
             modifier = Modifier
                 .testTag(TestIds.FORM_BACK)
                 .semantics { contentDescription = "Назад" },
-        ) { BackArrowIcon(Color(0xFF1F2937)) }
+        ) { Icon(BackIcon, contentDescription = null, tint = Ink) }
         Text(
-            text = "Новый пропуск",
+            text = "Новая заявка",
             style = MaterialTheme.typography.titleLarge,
             fontWeight = FontWeight.SemiBold,
+            color = Ink,
         )
+    }
+}
+
+/** Белая карточка-раздел с заголовком: поля сгруппированы по смыслу. */
+@Composable
+private fun Section(title: String, content: @Composable () -> Unit) {
+    Column(
+        verticalArrangement = Arrangement.spacedBy(12.dp),
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(CardShape)
+            .background(CardBackground)
+            .padding(16.dp),
+    ) {
+        Text(title, style = MaterialTheme.typography.titleMedium, color = Ink)
+        content()
     }
 }
 
@@ -160,45 +210,58 @@ private fun FieldError(field: FormField, text: String?) {
     Text(
         text = text,
         color = MaterialTheme.colorScheme.error,
-        fontSize = 13.sp,
+        fontSize = 12.sp,
+        lineHeight = 16.sp,
         modifier = Modifier
-            .padding(start = 4.dp, top = 2.dp)
+            .padding(top = 4.dp)
             .testTag(field.errorTag),
     )
 }
 
-@Composable
-private fun fieldColors() = OutlinedTextFieldDefaults.colors(
-    focusedContainerColor = FieldBackground,
-    unfocusedContainerColor = FieldBackground,
-    errorContainerColor = FieldBackground,
-    unfocusedBorderColor = FieldBorder,
-)
-
+/**
+ * Поле формы. Подпись (с форматом) всегда стоит над полем — одинаково для всех полей, в том числе узких
+ * полей времени, куда плавающая подпись не помещается. В самом поле — пример значения.
+ */
 @Composable
 private fun FormTextField(
     field: FormField,
     label: String,
+    example: String?,
     state: FormUiState,
     onChange: (FormField, String) -> Unit,
+    modifier: Modifier = Modifier,
     keyboardType: KeyboardType = KeyboardType.Text,
     capitalization: KeyboardCapitalization = KeyboardCapitalization.None,
+    imeAction: ImeAction = ImeAction.Next,
     singleLine: Boolean = true,
 ) {
     val error = errorText(state, field)
-    Column {
+    Column(modifier) {
+        Text(
+            text = label,
+            color = if (error != null) MaterialTheme.colorScheme.error else MutedText,
+            fontSize = 13.sp,
+            lineHeight = 18.sp,
+            fontWeight = FontWeight.Medium,
+            modifier = Modifier.padding(bottom = 6.dp),
+        )
         OutlinedTextField(
             value = state.input[field],
             onValueChange = { onChange(field, it) },
-            label = { Text(label) },
+            placeholder = example?.let { { Text(it, color = Placeholder) } },
             isError = error != null,
             singleLine = singleLine,
-            shape = RoundedCornerShape(12.dp),
-            colors = fieldColors(),
+            minLines = if (singleLine) 1 else 2,
+            shape = ControlShape,
+            colors = OutlinedTextFieldDefaults.colors(
+                focusedTextColor = Ink,
+                unfocusedTextColor = Ink,
+                unfocusedBorderColor = FieldBorder,
+            ),
             keyboardOptions = KeyboardOptions(
                 keyboardType = keyboardType,
                 capitalization = capitalization,
-                imeAction = if (singleLine) ImeAction.Next else ImeAction.Default,
+                imeAction = if (singleLine) imeAction else ImeAction.Default,
             ),
             modifier = Modifier
                 .fillMaxWidth()
@@ -208,81 +271,7 @@ private fun FormTextField(
     }
 }
 
-/**
- * Дата и время одним блоком, как в макете. Подписи формата обязательны и не помещаются внутрь узких полей,
- * поэтому у времени подпись стоит над полем, а в поле — подсказка-плейсхолдер.
- */
-@Composable
-private fun DateTimeBlock(state: FormUiState, onChange: (FormField, String) -> Unit) {
-    Column(
-        verticalArrangement = Arrangement.spacedBy(8.dp),
-        modifier = Modifier
-            .fillMaxWidth()
-            .clip(RoundedCornerShape(14.dp))
-            .background(Color(0xFFE3EAF5))
-            .padding(10.dp),
-    ) {
-        val dateError = errorText(state, FormField.DATE)
-        Column {
-            OutlinedTextField(
-                value = state.input.date,
-                onValueChange = { onChange(FormField.DATE, it) },
-                label = { Text(stringResource(R.string.form_date)) },
-                placeholder = { Text("14.10.2026") },
-                isError = dateError != null,
-                singleLine = true,
-                shape = RoundedCornerShape(12.dp),
-                colors = fieldColors(),
-                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Ascii, imeAction = ImeAction.Next),
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .testTag(TestIds.FORM_DATE),
-            )
-            FieldError(FormField.DATE, dateError)
-        }
-
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            TimeField(FormField.VALID_FROM, stringResource(R.string.form_time_from), "10:00", state, onChange,
-                Modifier.weight(1f))
-            TimeField(FormField.VALID_TO, stringResource(R.string.form_time_to), "16:00", state, onChange,
-                Modifier.weight(1f))
-        }
-    }
-}
-
-@Composable
-private fun TimeField(
-    field: FormField,
-    label: String,
-    example: String,
-    state: FormUiState,
-    onChange: (FormField, String) -> Unit,
-    modifier: Modifier,
-) {
-    val error = errorText(state, field)
-    Column(modifier) {
-        Text(label, color = MutedText, fontSize = 13.sp, modifier = Modifier.padding(start = 4.dp, bottom = 4.dp))
-        OutlinedTextField(
-            value = state.input[field],
-            onValueChange = { onChange(field, it) },
-            placeholder = { Text(example) },
-            isError = error != null,
-            singleLine = true,
-            shape = RoundedCornerShape(12.dp),
-            colors = fieldColors(),
-            keyboardOptions = KeyboardOptions(
-                keyboardType = KeyboardType.Ascii,
-                imeAction = if (field == FormField.VALID_TO) ImeAction.Done else ImeAction.Next,
-            ),
-            modifier = Modifier
-                .fillMaxWidth()
-                .testTag(field.inputTag),
-        )
-        FieldError(field, error)
-    }
-}
-
-/** Низ экрана: общая ошибка, индикатор отправки (отдельно от кнопки) и сама кнопка. */
+/** Низ экрана: общая ошибка, кнопка и индикатор отправки (отдельный элемент поверх края кнопки). */
 @Composable
 private fun BottomBar(state: FormUiState, onSubmit: () -> Unit) {
     Column(
@@ -296,49 +285,39 @@ private fun BottomBar(state: FormUiState, onSubmit: () -> Unit) {
             Text(
                 text = common,
                 color = MaterialTheme.colorScheme.error,
+                fontWeight = FontWeight.Medium,
                 modifier = Modifier
                     .fillMaxWidth()
-                    .clip(RoundedCornerShape(10.dp))
+                    .clip(ControlShape)
                     .background(ErrorTint)
-                    .padding(horizontal = 12.dp, vertical = 8.dp)
+                    .padding(horizontal = 12.dp, vertical = 10.dp)
                     .testTag(TestIds.FORM_ERROR_COMMON),
             )
         }
-        if (state.sending) {
-            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+        Box(Modifier.fillMaxWidth()) {
+            Button(
+                onClick = onSubmit,
+                // Доступна всегда, кроме времени запроса: ошибки показываются ПОСЛЕ нажатия.
+                enabled = !state.sending,
+                shape = ControlShape,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(52.dp)
+                    .testTag(TestIds.FORM_SUBMIT),
+            ) {
+                Text(stringResource(R.string.form_submit), fontSize = 16.sp, fontWeight = FontWeight.Medium)
+            }
+            // Индикатор — сосед кнопки, а не её содержимое; лежит поверх края и не сдвигает вёрстку.
+            if (state.sending) {
                 CircularProgressIndicator(
                     strokeWidth = 2.dp,
                     modifier = Modifier
+                        .align(Alignment.CenterEnd)
+                        .padding(end = 16.dp)
                         .size(20.dp)
                         .testTag(TestIds.FORM_LOADING),
                 )
-                Text("Отправляем заявку…", color = MutedText)
             }
         }
-        Button(
-            onClick = onSubmit,
-            // Доступна всегда, кроме времени запроса: ошибки показываются ПОСЛЕ нажатия.
-            enabled = !state.sending,
-            shape = RoundedCornerShape(14.dp),
-            modifier = Modifier
-                .fillMaxWidth()
-                .height(52.dp)
-                .testTag(TestIds.FORM_SUBMIT),
-        ) {
-            Text(stringResource(R.string.form_submit), fontSize = 16.sp)
-        }
-    }
-}
-
-/** Стрелка «назад». Пакета иконок Material в зависимостях нет — рисуем сами. */
-@Composable
-private fun BackArrowIcon(tint: Color) {
-    Canvas(Modifier.size(22.dp)) {
-        val w = size.width
-        val h = size.height
-        val stroke = 2.dp.toPx()
-        drawLine(tint, Offset(w * 0.15f, h * 0.5f), Offset(w * 0.85f, h * 0.5f), stroke, StrokeCap.Round)
-        drawLine(tint, Offset(w * 0.15f, h * 0.5f), Offset(w * 0.45f, h * 0.2f), stroke, StrokeCap.Round)
-        drawLine(tint, Offset(w * 0.15f, h * 0.5f), Offset(w * 0.45f, h * 0.8f), stroke, StrokeCap.Round)
     }
 }
