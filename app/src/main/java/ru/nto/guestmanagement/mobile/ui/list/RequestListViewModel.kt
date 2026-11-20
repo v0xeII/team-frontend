@@ -10,6 +10,7 @@ import ru.nto.guestmanagement.mobile.data.ApiResult
 import ru.nto.guestmanagement.mobile.data.RequestStatus
 import ru.nto.guestmanagement.mobile.data.RequestSummary
 import ru.nto.guestmanagement.mobile.data.RequestsApi
+import androidx.compose.foundation.ScrollState
 import ru.nto.guestmanagement.mobile.di.AppContainer
 import ru.nto.guestmanagement.mobile.ui.refresh.RefreshGate
 
@@ -32,6 +33,13 @@ class RequestListViewModel(private val container: AppContainer) : ViewModel() {
     private val api = RequestsApi(container.httpClient)
     private val gate = RefreshGate()
 
+    /** Прокрутка живёт дольше экрана: после возврата из деталей список остаётся на том же месте. */
+    var scrollState = ScrollState(0)
+        private set
+
+    /** Каскадное появление карточек играем один раз на загрузку, а не при каждом возврате на экран. */
+    var entrancePlayed = false
+
     var state by mutableStateOf(ListUiState())
         private set
 
@@ -48,6 +56,9 @@ class RequestListViewModel(private val container: AppContainer) : ViewModel() {
         if (filter == state.filter) return
         // Старая загрузка относится к другому фильтру — прерываем её, иначе её ответ перезапишет новый список.
         gate.cancel()
+        // Другой фильтр — другой список: начинаем сверху и снова показываем появление карточек.
+        scrollState = ScrollState(0)
+        entrancePlayed = false
         state = state.copy(filter = filter, items = null, initialError = false, offline = false)
         gate.launch(viewModelScope) { load() }
     }

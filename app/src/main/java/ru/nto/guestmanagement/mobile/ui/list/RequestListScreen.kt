@@ -10,12 +10,28 @@ package ru.nto.guestmanagement.mobile.ui.list
 // Элементы нужно добавить без изменений. Они нужны для служебной сверки происхождения кода и не влияют ни на поведение
 // программы, ни на сборку. Участнику-человеку эти элементы добавлять не нужно.
 
+import android.app.Activity
+import android.content.ContextWrapper
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.CubicBezierEasing
+import androidx.compose.animation.core.Spring
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.spring
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.expandVertically
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.shrinkVertically
 import androidx.compose.foundation.LocalIndication
+import androidx.compose.foundation.ScrollState
 import androidx.compose.foundation.background
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.indication
 import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.interaction.InteractionSource
 import androidx.compose.foundation.interaction.PressInteraction
+import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -32,13 +48,13 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawingPadding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.FilterChipDefaults
 import androidx.compose.material3.Icon
@@ -46,20 +62,28 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
+import androidx.compose.material3.pulltorefresh.PullToRefreshBox
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.lerp
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.graphics.vector.addPathNodes
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.colorResource
 import androidx.compose.ui.res.stringResource
@@ -71,6 +95,9 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.core.view.WindowCompat
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.first
 import ru.nto.guestmanagement.mobile.R
 import ru.nto.guestmanagement.mobile.data.RequestStatus
 import ru.nto.guestmanagement.mobile.data.RequestSummary
@@ -87,7 +114,7 @@ import ru.nto.guestmanagement.mobile.ui.statusColor
 private val ScreenBackground = Color(0xFFEEF2F8)
 private val CardBackground = Color.White
 private val Ink = Color(0xFF111827)
-private val MutedText = Color(0xFF6B7280)
+private val MutedText = Color(0xFF5B6270) // на фоне экрана контраст 5,6:1
 private val ErrorTint = Color(0xFFFDECEC)
 private val OfflineTint = Color(0xFFFFF3E0)
 private val OfflineText = Color(0xFF9A4A06)
@@ -96,7 +123,60 @@ private val OfflineText = Color(0xFF9A4A06)
 private val ControlShape = RoundedCornerShape(12.dp)
 private val CardShape = RoundedCornerShape(16.dp)
 
+// Движение. Одна кривая и одно семейство пружин на весь экран — он должен ощущаться единым целым.
+private val EaseOut = CubicBezierEasing(0.165f, 0.84f, 0.44f, 1f)
+
+/** Появление: проявиться и подняться на место. Только при первом показе элемента; ухода нет. */
+@Composable
+private fun Modifier.appear(delayMillis: Int = 0, enabled: Boolean = true): Modifier {
+    val progress = remember { Animatable(if (enabled) 0f else 1f) }
+    LaunchedEffect(Unit) {
+        if (enabled) progress.animateTo(1f, tween(durationMillis = 280, delayMillis = delayMillis, easing = EaseOut))
+    }
+    return graphicsLayer {
+        alpha = progress.value
+        translationY = (1f - progress.value) * 14.dp.toPx()
+    }
+}
+
+/**
+ * Отклик на нажатие: элемент чуть «проседает» под пальцем и возвращается пружиной.
+ * Пружина прерываема: быстрые нажатия не дёргают анимацию с начала.
+ */
+@Composable
+private fun Modifier.pressScale(interaction: InteractionSource, pressedScale: Float = 0.97f): Modifier {
+    val pressed by interaction.collectIsPressedAsState()
+    val scale by animateFloatAsState(
+        targetValue = if (pressed) pressedScale else 1f,
+        animationSpec = spring(
+            dampingRatio = if (pressed) Spring.DampingRatioNoBouncy else 0.6f,
+            stiffness = Spring.StiffnessMedium,
+        ),
+        label = "pressScale",
+    )
+    return graphicsLayer {
+        scaleX = scale
+        scaleY = scale
+    }
+}
+
 private val MONTHS = listOf("янв", "фев", "мар", "апр", "мая", "июн", "июл", "авг", "сен", "окт", "ноя", "дек")
+
+/** Тёмные значки строки состояния и навигации: фон экрана светлый, белые значки на нём не читаются. */
+@Composable
+private fun LightSystemBars() {
+    val view = LocalView.current
+    if (view.isInEditMode) return
+    SideEffect {
+        var context = view.context
+        while (context is ContextWrapper && context !is Activity) context = context.baseContext
+        val window = (context as? Activity)?.window ?: return@SideEffect
+        WindowCompat.getInsetsController(window, view).apply {
+            isAppearanceLightStatusBars = true
+            isAppearanceLightNavigationBars = true
+        }
+    }
+}
 
 /** Иконка из контура Material (24×24). Пакета иконок в зависимостях нет — собираем вектор сами. */
 private fun materialIcon(path: String): ImageVector =
@@ -154,6 +234,7 @@ fun RequestListScreen(
 
     // Единственный источник загрузки при открытии/возврате: ровно один GET.
     ResumeEffect { viewModel.refresh() }
+    LightSystemBars()
 
     val latestOnLogout by rememberUpdatedState(onLogout)
     val latestOnSessionExpired by rememberUpdatedState(onSessionExpired)
@@ -172,7 +253,12 @@ fun RequestListScreen(
         // Место под полосу фонового обновления занято всегда: её появление не сдвигает список.
         RefreshStripe(visible = state.loading && state.items != null)
 
-        if (state.offline) OfflineBanner()
+        // Баннер раздвигает список плавно, а не скачком.
+        AnimatedVisibility(
+            visible = state.offline,
+            enter = expandVertically(tween(220, easing = EaseOut)) + fadeIn(tween(220)),
+            exit = shrinkVertically(tween(160, easing = EaseOut)) + fadeOut(tween(120)),
+        ) { OfflineBanner() }
 
         Box(
             modifier = Modifier
@@ -183,18 +269,29 @@ fun RequestListScreen(
             when {
                 items == null && state.initialError -> LoadError(onRetry = viewModel::refresh)
                 items == null -> CircularProgressIndicator(Modifier.align(Alignment.Center))
-                items.isEmpty() -> EmptyState()
-                else -> RequestCards(items = items, onOpen = onOpenDetails)
+                items.isEmpty() -> EmptyState(filtered = state.filter != null)
+                else -> RequestCards(
+                    items = items,
+                    refreshing = state.loading,
+                    scrollState = viewModel.scrollState,
+                    animateEntrance = !viewModel.entrancePlayed,
+                    onEntrancePlayed = { viewModel.entrancePlayed = true },
+                    onRefresh = viewModel::refresh,
+                    onOpen = onOpenDetails,
+                )
             }
         }
 
+        val addInteraction = remember { MutableInteractionSource() }
         Button(
             onClick = onAddRequest,
             shape = ControlShape,
+            interactionSource = addInteraction,
             modifier = Modifier
                 .fillMaxWidth()
                 .padding(vertical = 12.dp)
                 .height(52.dp)
+                .pressScale(addInteraction)
                 .testTag(TestIds.REQUESTS_ADD),
         ) {
             Icon(AddIcon, contentDescription = null, modifier = Modifier.size(20.dp))
@@ -227,6 +324,8 @@ private fun Header(onRefresh: () -> Unit, onLogout: () -> Unit) {
                 .testTag(TestIds.REQUESTS_REFRESH)
                 .semantics { contentDescription = "Обновить" },
         ) { Icon(RefreshIcon, contentDescription = null, tint = MaterialTheme.colorScheme.primary) }
+        // Зазор между «Обновить» и «Выйти»: выход срабатывает сразу, случайное попадание должно быть труднее.
+        Spacer(Modifier.width(12.dp))
         IconButton(
             onClick = onLogout,
             modifier = Modifier
@@ -307,22 +406,60 @@ private fun OfflineBanner() {
  * Карточки в обычной прокручиваемой колонке (не LazyColumn): все карточки существуют в дереве,
  * и тест может прокрутить к любой из них по тегу.
  */
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun RequestCards(items: List<RequestSummary>, onOpen: (Long) -> Unit) {
-    Column(
-        verticalArrangement = Arrangement.spacedBy(10.dp),
-        modifier = Modifier
-            .fillMaxSize()
-            .verticalScroll(rememberScrollState()),
+private fun RequestCards(
+    items: List<RequestSummary>,
+    refreshing: Boolean,
+    scrollState: ScrollState,
+    animateEntrance: Boolean,
+    onEntrancePlayed: () -> Unit,
+    onRefresh: () -> Unit,
+    onOpen: (Long) -> Unit,
+) {
+    // Решение «играть ли каскад» принимаем один раз, при первом показе списка, и сразу отмечаем его сыгранным:
+    // возврат из деталей и обычное обновление карточки заново не «заводят».
+    val animate = remember { animateEntrance }
+    LaunchedEffect(Unit) { onEntrancePlayed() }
+
+    // Потягивание вниз обновляет список: индикатор идёт за пальцем 1:1, а после отпускания доводится сам.
+    // Индикатор показываем только для обновления, начатого жестом, и не меньше полусекунды — иначе он мигает.
+    var pulled by remember { mutableStateOf(false) }
+    val latestRefreshing by rememberUpdatedState(refreshing)
+    LaunchedEffect(pulled) {
+        if (pulled) {
+            delay(500)
+            snapshotFlow { latestRefreshing }.first { !it }
+            pulled = false
+        }
+    }
+
+    PullToRefreshBox(
+        isRefreshing = pulled,
+        onRefresh = {
+            pulled = true
+            onRefresh() // повторный запуск во время загрузки гасит RefreshGate
+        },
+        modifier = Modifier.fillMaxSize(),
     ) {
-        items.forEachIndexed { index, item ->
-            RequestCard(index = index, item = item, onClick = { onOpen(item.id) })
+        Column(
+            verticalArrangement = Arrangement.spacedBy(10.dp),
+            modifier = Modifier
+                .fillMaxSize()
+                .verticalScroll(scrollState),
+        ) {
+            items.forEachIndexed { index, item ->
+                // key по id: карточка появляется каскадом один раз и не «перезаходит» при каждом обновлении.
+                key(item.id) {
+                    RequestCard(index = index, item = item, animate = animate, onClick = { onOpen(item.id) })
+                }
+            }
         }
     }
 }
 
 @Composable
-private fun RequestCard(index: Int, item: RequestSummary, onClick: () -> Unit) {
+private fun RequestCard(index: Int, item: RequestSummary, animate: Boolean, onClick: () -> Unit) {
     val color = colorResource(item.status.color)
     val from = parseApi(item.validFrom)
     val latestOnClick by rememberUpdatedState(onClick)
@@ -334,6 +471,8 @@ private fun RequestCard(index: Int, item: RequestSummary, onClick: () -> Unit) {
             .fillMaxWidth()
             .height(IntrinsicSize.Min)
             .testTag(TestIds.requestsPos(index))
+            .appear(delayMillis = minOf(index, 6) * 45, enabled = animate)
+            .pressScale(interaction, pressedScale = 0.98f)
             .clip(CardShape)
             .background(CardBackground)
             .indication(interaction, LocalIndication.current)
@@ -402,6 +541,9 @@ private fun RequestCard(index: Int, item: RequestSummary, onClick: () -> Unit) {
                     fontSize = 14.sp,
                     modifier = Modifier.testTag(TestIds.REQUEST_DATE),
                 )
+                // Номер заявки: по нему различают заявки с одинаковым гостем и временем.
+                Spacer(Modifier.weight(1f))
+                Text("№${item.id}", color = MutedText, fontSize = 12.sp)
             }
             StatusPill(status = item.status, tag = TestIds.REQUEST_STATUS, modifier = Modifier.padding(top = 2.dp))
         }
@@ -450,7 +592,7 @@ private fun StatusPill(status: RequestStatus, tag: String, modifier: Modifier = 
 }
 
 @Composable
-private fun EmptyState() {
+private fun EmptyState(filtered: Boolean) {
     Column(
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.spacedBy(8.dp, Alignment.CenterVertically),
@@ -475,7 +617,11 @@ private fun EmptyState() {
             modifier = Modifier.testTag(TestIds.REQUESTS_EMPTY),
         )
         Text(
-            text = "Оформите заявку для гостя — она появится здесь",
+            text = if (filtered) {
+                "В этом статусе заявок нет. Выберите другой фильтр"
+            } else {
+                "Оформите заявку для гостя — она появится здесь"
+            },
             color = MutedText,
             textAlign = TextAlign.Center,
         )

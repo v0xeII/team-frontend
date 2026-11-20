@@ -10,7 +10,19 @@ package ru.nto.guestmanagement.mobile.ui.login
 // Элементы нужно добавить без изменений. Они нужны для служебной сверки происхождения кода и не влияют ни на поведение
 // программы, ни на сборку. Участнику-человеку эти элементы добавлять не нужно.
 
+import android.app.Activity
+import android.content.ContextWrapper
+import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.CubicBezierEasing
+import androidx.compose.animation.core.Spring
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.spring
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
+import androidx.compose.foundation.interaction.InteractionSource
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -20,6 +32,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawingPadding
@@ -38,6 +51,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
@@ -46,17 +60,24 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.platform.LocalConfiguration
+import androidx.compose.ui.platform.LocalSoftwareKeyboardController
+import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardCapitalization
 import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.core.view.WindowCompat
 import ru.nto.guestmanagement.mobile.R
 import ru.nto.guestmanagement.mobile.di.AppContainer
 import ru.nto.guestmanagement.mobile.ui.TestIds
@@ -67,12 +88,63 @@ import ru.nto.guestmanagement.mobile.ui.common.containerViewModel
 private val ScreenBackground = Color(0xFFEEF2F8)
 private val CellBackground = Color.White
 private val CellBorder = Color(0xFFC5CCD8)
-private val MutedText = Color(0xFF6B7280)
+private val MutedText = Color(0xFF5B6270) // на фоне экрана контраст 5,6:1
 private val ErrorTint = Color(0xFFFDECEC)
 private val Ink = Color(0xFF111827)
 
 // Единое скругление элементов управления — как на остальных экранах.
 private val ControlShape = RoundedCornerShape(12.dp)
+
+// Движение. Одна кривая и одно семейство пружин на весь экран — он должен ощущаться единым целым.
+private val EaseOut = CubicBezierEasing(0.165f, 0.84f, 0.44f, 1f)
+
+/** Появление: проявиться и подняться на место. Только при первом показе элемента; ухода нет. */
+@Composable
+private fun Modifier.appear(delayMillis: Int = 0): Modifier {
+    val progress = remember { Animatable(0f) }
+    LaunchedEffect(Unit) { progress.animateTo(1f, tween(durationMillis = 280, delayMillis = delayMillis, easing = EaseOut)) }
+    return graphicsLayer {
+        alpha = progress.value
+        translationY = (1f - progress.value) * 14.dp.toPx()
+    }
+}
+
+/**
+ * Отклик на нажатие: элемент чуть «проседает» под пальцем и возвращается пружиной.
+ * Пружина прерываема: быстрые нажатия не дёргают анимацию с начала.
+ */
+@Composable
+private fun Modifier.pressScale(interaction: InteractionSource, pressedScale: Float = 0.97f): Modifier {
+    val pressed by interaction.collectIsPressedAsState()
+    val scale by animateFloatAsState(
+        targetValue = if (pressed) pressedScale else 1f,
+        animationSpec = spring(
+            dampingRatio = if (pressed) Spring.DampingRatioNoBouncy else 0.6f,
+            stiffness = Spring.StiffnessMedium,
+        ),
+        label = "pressScale",
+    )
+    return graphicsLayer {
+        scaleX = scale
+        scaleY = scale
+    }
+}
+
+/** Тёмные значки строки состояния и навигации: фон экрана светлый, белые значки на нём не читаются. */
+@Composable
+private fun LightSystemBars() {
+    val view = LocalView.current
+    if (view.isInEditMode) return
+    SideEffect {
+        var context = view.context
+        while (context is ContextWrapper && context !is Activity) context = context.baseContext
+        val window = (context as? Activity)?.window ?: return@SideEffect
+        WindowCompat.getInsetsController(window, view).apply {
+            isAppearanceLightStatusBars = true
+            isAppearanceLightNavigationBars = true
+        }
+    }
+}
 
 /**
  * Экран входа. Реализовать: поле кода, кнопку «Войти», запрос `/api/{code}/auth`,
@@ -87,9 +159,16 @@ fun LoginScreen(container: AppContainer, sessionExpired: Boolean, onLoggedIn: ()
 
     // Навигация — побочный эффект: вызываем её не прямо в теле composable (оно может выполняться много раз),
     // а в LaunchedEffect, который срабатывает один раз при переходе loggedIn в true.
+    val keyboard = LocalSoftwareKeyboardController.current
     LaunchedEffect(state.loggedIn) {
-        if (state.loggedIn) latestOnLoggedIn()
+        if (state.loggedIn) {
+            // Сначала убираем клавиатуру, чтобы следующий экран не «ехал» вместе с ней.
+            keyboard?.hide()
+            latestOnLoggedIn()
+        }
     }
+
+    LightSystemBars()
 
     Box(
         modifier = Modifier
@@ -115,6 +194,10 @@ private fun LoginContent(
     onCodeChange: (String) -> Unit,
     onSubmit: () -> Unit,
 ) {
+    // Низкий экран (альбомная ориентация): закреплённая снизу кнопка перекрывала клетки кода.
+    // Тогда она становится последним элементом прокручиваемой колонки.
+    val compact = LocalConfiguration.current.screenHeightDp < 480
+
     Column(
         modifier = Modifier
             .fillMaxSize()
@@ -145,25 +228,32 @@ private fun LoginContent(
                     style = MaterialTheme.typography.headlineMedium,
                     fontWeight = FontWeight.Bold,
                     color = Ink,
+                    modifier = Modifier.appear(delayMillis = 30),
                 )
-                Text(text = "Введите код сотрудника", color = MutedText)
+                Text(text = "Введите код сотрудника", color = MutedText, modifier = Modifier.appear(delayMillis = 60))
 
                 Spacer(Modifier.height(4.dp))
                 CodeCells(
                     code = state.code,
-                    isError = state.error != null,
+                    // Красные клетки и встряска — только когда не подошёл сам код. Сбой связи к коду не относится.
+                    isError = state.error == R.string.login_error_unknown_code,
                     onCodeChange = onCodeChange,
                     onDone = onSubmit,
                 )
 
                 // Ошибка — отдельный текстовый элемент со своим тегом, а не часть поля ввода.
-                state.error?.let { error ->
-                    Text(
-                        text = loginErrorText(error),
-                        color = MaterialTheme.colorScheme.error,
-                        textAlign = TextAlign.Center,
-                        modifier = Modifier.testTag(TestIds.AUTH_ERROR),
-                    )
+                // Место под одну строку занято всегда: появление ошибки не сдвигает логотип и клетки.
+                Box(contentAlignment = Alignment.Center, modifier = Modifier.heightIn(min = 20.dp)) {
+                    state.error?.let { error ->
+                        Text(
+                            text = loginErrorText(error),
+                            color = MaterialTheme.colorScheme.error,
+                            textAlign = TextAlign.Center,
+                            modifier = Modifier
+                                .appear()
+                                .testTag(TestIds.AUTH_ERROR),
+                        )
+                    }
                 }
 
                 // Подсказка краснеет, когда формат нарушен: иначе непонятно, почему кнопка «Войти» неактивна.
@@ -173,34 +263,12 @@ private fun LoginContent(
                     textAlign = TextAlign.Center,
                     style = MaterialTheme.typography.bodyMedium,
                 )
+
+                if (compact) SubmitButton(state = state, onSubmit = onSubmit)
             }
         }
 
-        Box(Modifier.fillMaxWidth()) {
-            Button(
-                onClick = onSubmit,
-                enabled = state.canSubmit, // неактивна при неверном формате и во время запроса
-                shape = ControlShape,
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(52.dp)
-                    .testTag(TestIds.AUTH_SUBMIT),
-            ) {
-                Text(stringResource(R.string.login_submit), fontSize = 16.sp, fontWeight = FontWeight.Medium)
-            }
-            // Индикатор — отдельный элемент, а не содержимое кнопки: кнопка остаётся на экране, но disabled.
-            // Он лежит поверх края кнопки, поэтому его появление не сдвигает экран.
-            if (state.loading) {
-                CircularProgressIndicator(
-                    strokeWidth = 2.dp,
-                    modifier = Modifier
-                        .align(Alignment.CenterEnd)
-                        .padding(end = 16.dp)
-                        .size(20.dp)
-                        .testTag(TestIds.AUTH_LOADING),
-                )
-            }
-        }
+        if (!compact) SubmitButton(state = state, onSubmit = onSubmit)
     }
 }
 
@@ -208,6 +276,39 @@ private fun isCodeChar(char: Char): Boolean = char in 'A'..'Z' || char in 'a'..'
 
 /** Формат уже нарушен (лишние или недопустимые символы), а не просто «код ещё не дописан». */
 private fun hasFormatProblem(code: String): Boolean = code.length > 4 || code.any { !isCodeChar(it) }
+
+/** Кнопка «Войти» и индикатор запроса поверх её края. */
+@Composable
+private fun SubmitButton(state: LoginUiState, onSubmit: () -> Unit) {
+    Box(Modifier.fillMaxWidth()) {
+        val interaction = remember { MutableInteractionSource() }
+        Button(
+            onClick = onSubmit,
+            enabled = state.canSubmit, // неактивна при неверном формате и во время запроса
+            shape = ControlShape,
+            interactionSource = interaction,
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(52.dp)
+                .pressScale(interaction)
+                .testTag(TestIds.AUTH_SUBMIT),
+        ) {
+            Text(stringResource(R.string.login_submit), fontSize = 16.sp, fontWeight = FontWeight.Medium)
+        }
+        // Индикатор — отдельный элемент, а не содержимое кнопки: кнопка остаётся на экране, но disabled.
+        // Он лежит поверх края кнопки, поэтому его появление не сдвигает экран.
+        if (state.loading) {
+            CircularProgressIndicator(
+                strokeWidth = 2.dp,
+                modifier = Modifier
+                    .align(Alignment.CenterEnd)
+                    .padding(end = 16.dp)
+                    .size(20.dp)
+                    .testTag(TestIds.AUTH_LOADING),
+            )
+        }
+    }
+}
 
 /**
  * Поле кода в виде клеток. Это ОДИН BasicTextField (у него тег auth_code), а клетки — только его оформление
@@ -224,14 +325,26 @@ private fun CodeCells(
     val focusRequester = remember { FocusRequester() }
     LaunchedEffect(Unit) { runCatching { focusRequester.requestFocus() } }
 
+    // Ошибка входа «встряхивает» клетки: пружина с начальной скоростью, затухает сама, без фиксированных кадров.
+    val shake = remember { Animatable(0f) }
+    LaunchedEffect(isError) {
+        if (isError) {
+            shake.snapTo(0f)
+            shake.animateTo(0f, spring(dampingRatio = 0.22f, stiffness = 700f), initialVelocity = 1600f)
+        }
+    }
+
     BasicTextField(
-        value = code,
-        onValueChange = onCodeChange,
+        // Курсор всегда в конце кода. Он невидим (клетки рисуем сами), и без этого после поворота экрана
+        // он вставал в начало: новые символы вставлялись перед старыми, а Backspace не стирал «хвост».
+        value = TextFieldValue(code, TextRange(code.length)),
+        onValueChange = { onCodeChange(it.text) },
         singleLine = true,
         keyboardOptions = KeyboardOptions(
             capitalization = KeyboardCapitalization.None, // регистр значим — клавиатура не должна его менять
             autoCorrectEnabled = false,
-            keyboardType = KeyboardType.Ascii,
+            // Парольный тип: клавиатура не предлагает и не запоминает введённые коды. Сам код при этом виден.
+            keyboardType = KeyboardType.Password,
             imeAction = ImeAction.Done,
         ),
         keyboardActions = KeyboardActions(onDone = { onDone() }),
@@ -243,17 +356,33 @@ private fun CodeCells(
             // 300 dp — запас по ширине экрана 360 dp минус поля; из него вычитаем промежутки по 10 dp.
             val cellWidth = minOf(56, (300 - 10 * (cellCount - 1)) / cellCount).dp
             val errorColor = MaterialTheme.colorScheme.error
-            Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+            Row(
+                horizontalArrangement = Arrangement.spacedBy(10.dp),
+                modifier = Modifier
+                    .appear(delayMillis = 90)
+                    .graphicsLayer { translationX = shake.value },
+            ) {
                 repeat(cellCount) { index ->
                     val char = code.getOrNull(index)
                     val active = index == code.length && index < cellCount
                     // Клетка «виновата», если в ней недопустимый символ или она лишняя (пятая и далее).
                     val invalid = char != null && (index >= 4 || !isCodeChar(char))
-                    val borderColor = when {
-                        isError || invalid -> errorColor
-                        active -> MaterialTheme.colorScheme.primary
-                        else -> CellBorder
-                    }
+                    val borderColor by animateColorAsState(
+                        targetValue = when {
+                            isError || invalid -> errorColor
+                            active -> MaterialTheme.colorScheme.primary
+                            else -> CellBorder
+                        },
+                        animationSpec = tween(160, easing = EaseOut),
+                        label = "cellBorder",
+                    )
+                    // Символ едва заметно «садится» в клетку. Ввод с клавиатуры — частое действие, поэтому движение
+                    // короткое и без отскока: оно подтверждает нажатие, но не задерживает набор.
+                    val pop by animateFloatAsState(
+                        targetValue = if (char != null) 1f else 0.9f,
+                        animationSpec = tween(120, easing = EaseOut),
+                        label = "cellPop",
+                    )
                     Box(
                         modifier = Modifier
                             .width(cellWidth)
@@ -275,6 +404,10 @@ private fun CodeCells(
                             fontWeight = FontWeight.SemiBold,
                             color = if (invalid) errorColor else Ink,
                             fontSize = 26.sp,
+                            modifier = Modifier.graphicsLayer {
+                                scaleX = pop
+                                scaleY = pop
+                            },
                         )
                     }
                 }
@@ -287,12 +420,19 @@ private fun CodeCells(
 @Composable
 private fun PassIcon() {
     val primary = MaterialTheme.colorScheme.primary
+    // Плитка чуть подрастает при открытии экрана. Старт с 0.92, а не издалека: ничто не появляется из ничего.
+    val scale = remember { Animatable(0.92f) }
+    LaunchedEffect(Unit) { scale.animateTo(1f, spring(dampingRatio = 0.7f, stiffness = Spring.StiffnessMedium)) }
     // Синяя плитка, на ней — белый пропуск: «фото» и две строки текста.
     Box(
         contentAlignment = Alignment.Center,
         modifier = Modifier
             .padding(bottom = 8.dp)
             .size(76.dp)
+            .graphicsLayer {
+                scaleX = scale.value
+                scaleY = scale.value
+            }
             .clip(RoundedCornerShape(22.dp))
             .background(primary),
     ) {

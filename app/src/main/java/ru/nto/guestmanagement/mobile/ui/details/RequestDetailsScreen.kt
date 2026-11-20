@@ -10,6 +10,17 @@ package ru.nto.guestmanagement.mobile.ui.details
 // Элементы нужно добавить без изменений. Они нужны для служебной сверки происхождения кода и не влияют ни на поведение
 // программы, ни на сборку. Участнику-человеку эти элементы добавлять не нужно.
 
+import android.app.Activity
+import android.content.ContextWrapper
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.CubicBezierEasing
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.expandVertically
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.shrinkVertically
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
@@ -34,6 +45,7 @@ import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -42,18 +54,26 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import androidx.compose.material3.pulltorefresh.PullToRefreshBox
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.lerp
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.graphics.vector.addPathNodes
+import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.colorResource
 import androidx.compose.ui.res.stringResource
@@ -63,6 +83,9 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.core.view.WindowCompat
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.first
 import ru.nto.guestmanagement.mobile.R
 import ru.nto.guestmanagement.mobile.data.RequestDetails
 import ru.nto.guestmanagement.mobile.data.RequestStatus
@@ -79,7 +102,7 @@ import ru.nto.guestmanagement.mobile.ui.statusColor
 private val ScreenBackground = Color(0xFFEEF2F8)
 private val CardBackground = Color.White
 private val Ink = Color(0xFF111827)
-private val MutedText = Color(0xFF6B7280)
+private val MutedText = Color(0xFF5B6270) // на фоне экрана контраст 5,6:1
 private val ErrorTint = Color(0xFFFDECEC)
 private val OfflineTint = Color(0xFFFFF3E0)
 private val OfflineText = Color(0xFF9A4A06)
@@ -87,6 +110,36 @@ private val OfflineText = Color(0xFF9A4A06)
 // Два скругления на всё приложение: элементы управления и карточки.
 private val ControlShape = RoundedCornerShape(12.dp)
 private val CardShape = RoundedCornerShape(16.dp)
+
+// Движение. Одна кривая и одно семейство пружин на весь экран — он должен ощущаться единым целым.
+private val EaseOut = CubicBezierEasing(0.165f, 0.84f, 0.44f, 1f)
+
+/** Появление: проявиться и подняться на место. Только при первом показе элемента; ухода нет. */
+@Composable
+private fun Modifier.appear(delayMillis: Int = 0): Modifier {
+    val progress = remember { Animatable(0f) }
+    LaunchedEffect(Unit) { progress.animateTo(1f, tween(durationMillis = 280, delayMillis = delayMillis, easing = EaseOut)) }
+    return graphicsLayer {
+        alpha = progress.value
+        translationY = (1f - progress.value) * 14.dp.toPx()
+    }
+}
+
+/** Тёмные значки строки состояния и навигации: фон экрана светлый, белые значки на нём не читаются. */
+@Composable
+private fun LightSystemBars() {
+    val view = LocalView.current
+    if (view.isInEditMode) return
+    SideEffect {
+        var context = view.context
+        while (context is ContextWrapper && context !is Activity) context = context.baseContext
+        val window = (context as? Activity)?.window ?: return@SideEffect
+        WindowCompat.getInsetsController(window, view).apply {
+            isAppearanceLightStatusBars = true
+            isAppearanceLightNavigationBars = true
+        }
+    }
+}
 
 /** Иконка из контура Material (24×24). Пакета иконок в зависимостях нет — собираем вектор сами. */
 private fun materialIcon(path: String): ImageVector =
@@ -118,6 +171,7 @@ fun RequestDetailsScreen(
 
     // Единственный источник загрузки при открытии/возврате/выходе из фона: ровно один GET.
     ResumeEffect { viewModel.refresh() }
+    LightSystemBars()
 
     val latestOnSessionExpired by rememberUpdatedState(onSessionExpired)
     LaunchedEffect(state.sessionExpired) { if (state.sessionExpired) latestOnSessionExpired() }
@@ -141,12 +195,17 @@ fun RequestDetailsScreen(
             when {
                 details == null && state.loadError != null -> LoadErrorBlock(state.loadError, viewModel::refresh)
                 details == null -> CircularProgressIndicator(Modifier.align(Alignment.Center))
-                else -> DetailsContent(details = details, state = state)
+                else -> DetailsContent(details = details, state = state, onRefresh = viewModel::refresh)
             }
         }
 
         // Кнопка отмены — внизу экрана, видна без прокрутки; только для статуса «На рассмотрении».
-        if (details?.status == RequestStatus.PENDING) {
+        // Панель раскрывается снизу и туда же уходит после отмены — вход и выход по одной оси.
+        AnimatedVisibility(
+            visible = details?.status == RequestStatus.PENDING,
+            enter = expandVertically(tween(260, easing = EaseOut), expandFrom = Alignment.Top) + fadeIn(tween(260)),
+            exit = shrinkVertically(tween(200, easing = EaseOut), shrinkTowards = Alignment.Top) + fadeOut(tween(140)),
+        ) {
             CancelBar(cancelling = state.cancelling, onClick = viewModel::askCancel)
         }
     }
@@ -214,9 +273,33 @@ private fun RefreshStripe(visible: Boolean) {
     }
 }
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun DetailsContent(details: RequestDetails, state: DetailsUiState) {
+private fun DetailsContent(details: RequestDetails, state: DetailsUiState, onRefresh: () -> Unit) {
     val color = colorResource(details.status.color)
+    // Смена статуса (например, после отмены) перекрашивает полосу плавно, а не скачком.
+    val stripeColor by animateColorAsState(color, tween(350, easing = EaseOut), label = "statusStripe")
+
+    // Потягивание вниз обновляет детали: индикатор идёт за пальцем 1:1, после отпускания доводится сам.
+    // Показываем его только для обновления, начатого жестом, и не меньше полусекунды — иначе он мигает.
+    var pulled by remember { mutableStateOf(false) }
+    val latestLoading by rememberUpdatedState(state.loading)
+    LaunchedEffect(pulled) {
+        if (pulled) {
+            delay(500)
+            snapshotFlow { latestLoading }.first { !it }
+            pulled = false
+        }
+    }
+
+    PullToRefreshBox(
+        isRefreshing = pulled,
+        onRefresh = {
+            pulled = true
+            onRefresh() // повторный запуск во время загрузки гасит RefreshGate
+        },
+        modifier = Modifier.fillMaxSize(),
+    ) {
     Column(
         verticalArrangement = Arrangement.spacedBy(12.dp),
         modifier = Modifier
@@ -248,6 +331,7 @@ private fun DetailsContent(details: RequestDetails, state: DetailsUiState) {
         Column(
             modifier = Modifier
                 .fillMaxWidth()
+                .appear()
                 .clip(CardShape)
                 .background(CardBackground),
         ) {
@@ -256,7 +340,7 @@ private fun DetailsContent(details: RequestDetails, state: DetailsUiState) {
                 Modifier
                     .fillMaxWidth()
                     .height(4.dp)
-                    .background(color),
+                    .background(stripeColor),
             )
             Column(Modifier.padding(16.dp)) {
                 StatusPill(status = details.status, tag = TestIds.DETAILS_STATUS)
@@ -276,7 +360,7 @@ private fun DetailsContent(details: RequestDetails, state: DetailsUiState) {
         if (details.status == RequestStatus.REJECTED) CommentBlock(details.comment)
 
         // Гость: длинные значения — подпись сверху, текст на всю ширину слева.
-        Card {
+        Card(delayMillis = 60) {
             InfoBlock(R.string.details_label_name, details.fullName, TestIds.DETAILS_NAME)
             InfoRow(R.string.details_label_phone, details.phone, TestIds.DETAILS_PHONE)
             // Организация показывается, только если задана.
@@ -285,20 +369,22 @@ private fun DetailsContent(details: RequestDetails, state: DetailsUiState) {
         }
 
         // Время: короткие значения — в строку.
-        Card {
+        Card(delayMillis = 120) {
             InfoRow(R.string.details_label_from, formatDateTime(details.validFrom), TestIds.DETAILS_VALID_FROM)
             InfoRow(R.string.details_label_to, formatDateTime(details.validTo), TestIds.DETAILS_VALID_TO)
             InfoRow(R.string.details_label_created, formatDateTime(details.createdAt), TestIds.DETAILS_CREATED_AT)
             InfoRow(R.string.details_label_updated, formatDateTime(details.updatedAt), TestIds.DETAILS_UPDATED_AT, last = true)
         }
     }
+    }
 }
 
 @Composable
-private fun Card(content: @Composable () -> Unit) {
+private fun Card(delayMillis: Int, content: @Composable () -> Unit) {
     Column(
         modifier = Modifier
             .fillMaxWidth()
+            .appear(delayMillis)
             .clip(CardShape)
             .background(CardBackground)
             .padding(horizontal = 16.dp, vertical = 4.dp),
@@ -388,6 +474,7 @@ private fun CommentBlock(comment: String?) {
         modifier = Modifier
             .fillMaxWidth()
             .height(IntrinsicSize.Min)
+            .appear(delayMillis = 40)
             .clip(CardShape)
             .background(ErrorTint),
     ) {
@@ -425,6 +512,7 @@ private fun Banner(text: String, hint: String?, textColor: Color, background: Co
     Column(
         modifier = Modifier
             .fillMaxWidth()
+            .appear()
             .clip(ControlShape)
             .background(background)
             .padding(horizontal = 12.dp, vertical = 8.dp),
@@ -526,8 +614,8 @@ private fun ConfirmCancelDialog(details: RequestDetails, onConfirm: () -> Unit, 
         title = { Text(stringResource(R.string.details_cancel_title), color = Ink) },
         text = {
             Text(
-                "Заявка для ${details.fullName} на ${formatDate(details.validFrom)} " +
-                    "${formatInterval(details.validFrom, details.validTo)} будет отменена. " +
+                "Гость: ${details.fullName}, ${formatDate(details.validFrom)} " +
+                    "${formatInterval(details.validFrom, details.validTo)}. " +
                     stringResource(R.string.details_cancel_text),
                 color = MutedText,
             )
